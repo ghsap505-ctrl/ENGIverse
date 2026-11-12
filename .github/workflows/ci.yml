@@ -182,9 +182,20 @@ jobs:
 
       - name: Verify development health and frontend
         run: |
-          curl --fail --retry 20 --retry-delay 3 http://127.0.0.1:8000/api/v1/health
-          curl --fail --retry 20 --retry-delay 3 http://127.0.0.1:8000/api/v1/health/ready
-          curl --fail --retry 20 --retry-delay 3 http://127.0.0.1:5173/
+          for attempt in $(seq 1 30); do
+            frontend_health="$(docker inspect --format '{{.State.Health.Status}}' engiverse-ci-dev-frontend-1 2>/dev/null || true)"
+            if [ "$frontend_health" = "healthy" ]; then
+              break
+            fi
+            if [ "$attempt" = "30" ]; then
+              echo "Frontend healthcheck did not become healthy (last status: $frontend_health)"
+              exit 1
+            fi
+            sleep 2
+          done
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:8000/api/v1/health
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:8000/api/v1/health/ready
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:5173/
 
       - name: Collect development container diagnostics
         if: always()
