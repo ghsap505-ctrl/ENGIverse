@@ -2,10 +2,8 @@
 # Targets: dev (Vite dev server) | build (internal) | prod (static files via unprivileged nginx)
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock*.json ./
-# Reproducible when package-lock.json is committed (see README); falls back to
-# `npm install` only until a lockfile has been generated on a networked machine.
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi \
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts \
  && chown -R node:node /app
 
 FROM deps AS dev

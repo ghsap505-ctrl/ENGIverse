@@ -1,11 +1,12 @@
 import os
 
 # Must be set BEFORE importing app.main (which builds the app from env at import).
-os.environ.setdefault("APP_ENV", "test")
-os.environ.setdefault(
-    "DATABASE_URL",
-    "postgresql+psycopg://engiverse_test:unit-test-pass@localhost:5432/engiverse_test",
-)
+# Assignment prevents a developer/CI environment from leaking an unsupported or
+# production value into the deterministic test application.
+os.environ["APP_ENV"] = "test"
+os.environ[
+    "DATABASE_URL"
+] = "postgresql+psycopg://engiverse_test:unit-test-pass@localhost:5432/engiverse_test"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

@@ -21,7 +21,9 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 # 1. Python syntax
-py_files = [p for p in ROOT.rglob("*.py") if "__pycache__" not in p.parts]
+excluded_parts = {"__pycache__", "node_modules", ".pytest_cache", ".vite", "dist", "build"}
+py_files = [p for p in ROOT.rglob("*.py")
+            if not any(part in excluded_parts or part.startswith(".venv") for part in p.parts)]
 bad = []
 for p in py_files:
     try:
@@ -42,6 +44,14 @@ check("tsconfig strict + vite/client types",
 check("vite-env.d.ts present", (ROOT / "frontend/src/vite-env.d.ts").exists())
 check("frontend package-lock.json present", (ROOT / "frontend/package-lock.json").exists(),
       "generate with `npm install --package-lock-only` on a networked machine")
+backend_version = re.search(r'^version\s*=\s*"([^"]+)"',
+                            (ROOT / "backend/pyproject.toml").read_text(), re.MULTILINE)
+check("backend project version is 0.1.2", backend_version is not None
+      and backend_version.group(1) == "0.1.2", str(backend_version.group(1) if backend_version else None))
+check("frontend package version is 0.1.2", pkg.get("version") == "0.1.2",
+      str(pkg.get("version")))
+app_ts = (ROOT / "frontend/src/App.tsx").read_text()
+check("frontend displays version 0.1.2", "v0.1.2" in app_ts, "v0.1.2 not found")
 
 # 3. Backend requirements pinned and split
 for f in ("requirements.txt", "requirements-dev.txt"):
@@ -86,6 +96,10 @@ check("backend Dockerfile: non-root USER in dev and prod stages",
 check("backend Dockerfile: prod has HEALTHCHECK", "HEALTHCHECK" in bd.split("AS prod")[1])
 check("frontend Dockerfile: prod uses unprivileged nginx", "nginx-unprivileged" in
       (ROOT / "frontend/Dockerfile").read_text())
+fd = (ROOT / "frontend/Dockerfile").read_text()
+check("frontend Dockerfile: copies lockfile and uses npm ci",
+      "COPY package.json package-lock.json ./" in fd and "npm ci" in fd,
+      "Docker build must use the committed lockfile")
 for d in ("backend", "frontend"):
     check(f"{d}/.dockerignore present and excludes .env",
           (ROOT / d / ".dockerignore").exists() and ".env" in (ROOT / d / ".dockerignore").read_text())
