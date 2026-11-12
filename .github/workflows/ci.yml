@@ -161,8 +161,21 @@ jobs:
 
       - name: Verify production health, readiness, and database connectivity
         run: |
-          curl --fail --retry 20 --retry-delay 3 http://127.0.0.1:8080/api/v1/health
-          curl --fail --retry 20 --retry-delay 3 http://127.0.0.1:8080/api/v1/health/ready
+          for container in engiverse-ci-prod-db-1 engiverse-ci-prod-backend-1 engiverse-ci-prod-frontend-1; do
+            for attempt in $(seq 1 30); do
+              service_health="$(docker inspect --format '{{.State.Health.Status}}' "$container" 2>/dev/null || true)"
+              if [ "$service_health" = "healthy" ]; then
+                break
+              fi
+              if [ "$attempt" = "30" ]; then
+                echo "$container healthcheck did not become healthy (last status: $service_health)"
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:8080/api/v1/health
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:8080/api/v1/health/ready
           docker compose -p engiverse-ci-prod exec -T backend python -c \
             'from sqlalchemy import text; from app.db.session import get_engine; assert get_engine().connect().execute(text("SELECT 1")).scalar() == 1'
 
