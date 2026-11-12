@@ -28,9 +28,9 @@ cd backend && python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m pytest                                      # unit tests; integration tests auto-skip
 
-# Frontend: generate the lockfile ONCE, commit it, then build
+# Frontend: install from the committed lockfile, then build
 cd ../frontend
-npm install --package-lock-only && npm ci
+npm ci
 npm run build                                         # tsc -b && vite build
 
 # Compose validation

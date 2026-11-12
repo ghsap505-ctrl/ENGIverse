@@ -13,6 +13,6 @@ Do not upload local secrets, `.env` files, caches, virtual environments, `node_m
 - `.env` and any real credentials
 - `.pytest_cache`, `__pycache__`, `.venv`, `node_modules`, `dist`, `build`
 - Local database files, logs, private keys/certificates
-- Dependency lockfiles: none existed in the supplied 0.1.2 candidate; generate and commit the appropriate lockfile through the package manager after dependency resolution.
+- `frontend/package-lock.json` is committed and must be used with `npm ci` for reproducible installs.
 
 The `.env.example` files contain placeholders only. Copy them locally to `.env` and fill in secrets outside GitHub.

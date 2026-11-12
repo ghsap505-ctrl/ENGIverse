@@ -1,0 +1,219 @@
+name: ENGIverse CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  POSTGRES_DB: engiverse_ci
+  POSTGRES_USER: engiverse_ci
+  POSTGRES_PASSWORD: ci-only-engiverse-password
+
+jobs:
+  backend:
+    name: Backend tests with PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: engiverse_ci
+          POSTGRES_USER: engiverse_ci
+          POSTGRES_PASSWORD: ci-only-engiverse-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U engiverse_ci -d engiverse_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run unit and PostgreSQL integration tests
+        env:
+          APP_ENV: test
+          DATABASE_URL: postgresql+psycopg://engiverse_ci:ci-only-engiverse-password@127.0.0.1:5432/engiverse_ci
+          TEST_DATABASE_URL: postgresql+psycopg://engiverse_ci:ci-only-engiverse-password@127.0.0.1:5432/engiverse_ci
+        run: python -m pytest -ra
+
+      - name: Verify Alembic has no unplanned revisions
+        env:
+          APP_ENV: test
+          DATABASE_URL: postgresql+psycopg://engiverse_ci:ci-only-engiverse-password@127.0.0.1:5432/engiverse_ci
+        run: |
+          heads="$(alembic heads)"
+          if [ -n "$heads" ]; then
+            echo "Unexpected Alembic revision(s) found:"
+            printf '%s\n' "$heads"
+            exit 1
+          fi
+          echo "Alembic revision directory is intentionally empty for 0.1.2."
+
+  frontend-and-static:
+    name: Frontend, static checks, and dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install static-check dependencies
+        run: python -m pip install -r backend/requirements-dev.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies from lockfile
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run repository static checks
+        run: python scripts/static_checks.py
+
+      - name: Run frontend typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Audit production dependencies
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Audit all frontend dependencies and document known development-only findings
+        id: npm-audit
+        continue-on-error: true
+        working-directory: frontend
+        run: |
+          set +e
+          npm audit --audit-level=moderate 2>&1 | tee ../npm-audit-report.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo "## npm audit"
+            echo
+            echo "Production dependency audit is a required passing gate above."
+            echo "The full development dependency audit is informational in 0.1.2."
+            echo "Current known findings: Vite <=6.4.3 advisories and transitive esbuild <=0.24.2 advisory."
+            echo "The current non-breaking Vite 5 line does not remove these findings; Vite 8 is a breaking upgrade and is deferred pending compatibility testing."
+            echo
+            cat ../npm-audit-report.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload npm audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: npm-audit-report.txt
+          if-no-files-found: warn
+
+  docker:
+    name: Docker Compose build and runtime smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate production Compose configuration
+        run: docker compose config -q
+
+      - name: Validate development Compose configuration
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml config -q
+
+      - name: Build production Backend and Frontend images
+        run: docker compose build backend frontend
+
+      - name: Start production-like stack
+        run: docker compose -p engiverse-ci-prod up -d
+
+      - name: Verify production health, readiness, and database connectivity
+        run: |
+          for container in engiverse-ci-prod-db-1 engiverse-ci-prod-backend-1 engiverse-ci-prod-frontend-1; do
+            for attempt in $(seq 1 30); do
+              service_health="$(docker inspect --format '{{.State.Health.Status}}' "$container" 2>/dev/null || true)"
+              if [ "$service_health" = "healthy" ]; then
+                break
+              fi
+              if [ "$attempt" = "30" ]; then
+                echo "$container healthcheck did not become healthy (last status: $service_health)"
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:8080/api/v1/health
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:8080/api/v1/health/ready
+          docker compose -p engiverse-ci-prod exec -T backend python -c \
+            'from sqlalchemy import text; from app.db.session import get_engine; assert get_engine().connect().execute(text("SELECT 1")).scalar() == 1'
+
+      - name: Collect production container diagnostics
+        if: always()
+        run: docker compose -p engiverse-ci-prod ps && docker compose -p engiverse-ci-prod logs --no-color
+
+      - name: Stop production-like stack
+        if: always()
+        run: docker compose -p engiverse-ci-prod down -v --remove-orphans
+
+      - name: Build development Backend and Frontend images
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml build backend frontend
+
+      - name: Start development stack
+        run: docker compose -p engiverse-ci-dev -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+      - name: Verify development health and frontend
+        run: |
+          for attempt in $(seq 1 30); do
+            frontend_health="$(docker inspect --format '{{.State.Health.Status}}' engiverse-ci-dev-frontend-1 2>/dev/null || true)"
+            if [ "$frontend_health" = "healthy" ]; then
+              break
+            fi
+            if [ "$attempt" = "30" ]; then
+              echo "Frontend healthcheck did not become healthy (last status: $frontend_health)"
+              exit 1
+            fi
+            sleep 2
+          done
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:8000/api/v1/health
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:8000/api/v1/health/ready
+          curl --fail --retry 20 --retry-all-errors --retry-delay 3 http://127.0.0.1:5173/
+
+      - name: Collect development container diagnostics
+        if: always()
+        run: docker compose -p engiverse-ci-dev -f docker-compose.yml -f docker-compose.dev.yml ps && docker compose -p engiverse-ci-dev -f docker-compose.yml -f docker-compose.dev.yml logs --no-color
+
+      - name: Stop development stack
+        if: always()
+        run: docker compose -p engiverse-ci-dev -f docker-compose.yml -f docker-compose.dev.yml down -v --remove-orphans
