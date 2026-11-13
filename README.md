@@ -1,3 +1,7 @@
+![ENGIverse — Engineering Intelligence](assets/alhawa-cover.svg)
+
+---
+
 # ENGIverse
 Universal Engineering Intelligence & Learning Ecosystem
 
